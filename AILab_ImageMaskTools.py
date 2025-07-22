@@ -55,6 +55,8 @@ from comfy import model_management
 from comfy_extras.nodes_mask import ImageCompositeMasked
 from scipy import ndimage
 
+import execution_context
+
 # Utility functions
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
@@ -141,39 +143,40 @@ def fix_color_format(color: str) -> str:
 # Base class for preview
 class AILab_PreviewBase:
     def __init__(self):
-        self.output_dir = folder_paths.get_temp_directory()
+        # self.output_dir = folder_paths.get_temp_directory()
         self.type = "temp"
         self.prefix_append = ""
 
-    def get_unique_filename(self, filename_prefix):
-        os.makedirs(self.output_dir, exist_ok=True)
+    def get_unique_filename(self, filename_prefix, context: execution_context.ExecutionContext):
+        output_dir = folder_paths.get_temp_directory(context.user_hash)
+        os.makedirs(output_dir, exist_ok=True)
         filename = filename_prefix + self.prefix_append
         counter = 1
         while True:
             file = f"{filename}_{counter:04d}.png"
-            full_path = os.path.join(self.output_dir, file)
+            full_path = os.path.join(output_dir, file)
             if not os.path.exists(full_path):
                 return full_path, file
             counter += 1
 
-    def save_image(self, image, filename_prefix, prompt=None, extra_pnginfo=None):
+    def save_image(self, image, filename_prefix, prompt=None, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
         results = []
       
         try:
             if isinstance(image, torch.Tensor):
                 if len(image.shape) == 4:  # Batch of images
                     for i in range(image.shape[0]):
-                        full_output_path, file = self.get_unique_filename(filename_prefix)
+                        full_output_path, file = self.get_unique_filename(filename_prefix, context=context)
                         img = Image.fromarray(np.clip(image[i].cpu().numpy() * 255, 0, 255).astype(np.uint8))
                         img.save(full_output_path)        
                         results.append({"filename": file, "subfolder": "", "type": self.type})
                 else:
-                    full_output_path, file = self.get_unique_filename(filename_prefix)
+                    full_output_path, file = self.get_unique_filename(filename_prefix, context=context)
                     img = Image.fromarray(np.clip(image.cpu().numpy() * 255, 0, 255).astype(np.uint8))
                     img.save(full_output_path)
                     results.append({"filename": file, "subfolder": "", "type": self.type})
             else:
-                full_output_path, file = self.get_unique_filename(filename_prefix)
+                full_output_path, file = self.get_unique_filename(filename_prefix, context=context)
                 image.save(full_output_path)
                 results.append({"filename": file, "subfolder": "", "type": self.type})
 
@@ -197,7 +200,7 @@ class AILab_Preview(AILab_PreviewBase):
                 "image": ("IMAGE", {"default": None}),
                 "mask": ("MASK", {"default": None}),
             },
-            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO", "context": "EXECUTION_CONTEXT"},
         }
     
     RETURN_TYPES = ("IMAGE", "MASK")
@@ -206,17 +209,17 @@ class AILab_Preview(AILab_PreviewBase):
     OUTPUT_NODE = True
     CATEGORY = "🧪AILab/🖼️IMAGE"
 
-    def preview(self, image=None, mask=None, prompt=None, extra_pnginfo=None):
+    def preview(self, image=None, mask=None, prompt=None, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
         results = []
         
         if image is not None:
-            image_result = self.save_image(image, "image_preview", prompt, extra_pnginfo)
+            image_result = self.save_image(image, "image_preview", prompt, extra_pnginfo, context=context)
             if "ui" in image_result and "images" in image_result["ui"]:
                 results.extend(image_result["ui"]["images"])
         
         if mask is not None:
             preview = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
-            mask_result = self.save_image(preview, "mask_preview", prompt, extra_pnginfo)
+            mask_result = self.save_image(preview, "mask_preview", prompt, extra_pnginfo, context=context)
             if "ui" in mask_result and "images" in mask_result["ui"]:
                 results.extend(mask_result["ui"]["images"])
         
@@ -250,7 +253,7 @@ class AILab_MaskOverlay(AILab_PreviewBase):
                 "image": ("IMAGE", {"tooltip": tooltips["image"]}),
                 "mask": ("MASK", {"tooltip": tooltips["mask"]}),                
             },
-            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO", "context": "EXECUTION_CONTEXT"},
         }
     RETURN_TYPES = ("IMAGE", "MASK")
     RETURN_NAMES = ("IMAGE", "MASK")
@@ -273,7 +276,7 @@ class AILab_MaskOverlay(AILab_PreviewBase):
             return rgb_image
         return image
 
-    def execute(self, mask_opacity, mask_color, filename_prefix="ComfyUI", image=None, mask=None, prompt=None, extra_pnginfo=None):
+    def execute(self, mask_opacity, mask_color, filename_prefix="ComfyUI", image=None, mask=None, prompt=None, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
         """Execute image and mask composition"""
         if image is not None:
             image = self.ensure_rgb(image)
@@ -302,7 +305,7 @@ class AILab_MaskOverlay(AILab_PreviewBase):
             mask = torch.zeros((1, 64, 64))
 
         # Save preview for display
-        result = self.save_image(preview, filename_prefix, prompt, extra_pnginfo)
+        result = self.save_image(preview, filename_prefix, prompt, extra_pnginfo, context=context)
         
         # Return both the image and mask for further processing
         return {
@@ -320,7 +323,7 @@ class AILab_MaskPreview(AILab_PreviewBase):
     def INPUT_TYPES(s):
         return {
             "required": {"mask": ("MASK",),},
-            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO", "context": "EXECUTION_CONTEXT"},
         }
 
     RETURN_TYPES = ("MASK",)
@@ -329,9 +332,9 @@ class AILab_MaskPreview(AILab_PreviewBase):
     OUTPUT_NODE = True
     CATEGORY = "🧪AILab/🖼️IMAGE"
 
-    def preview_mask(self, mask, prompt=None, extra_pnginfo=None):
+    def preview_mask(self, mask, prompt=None, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
         preview = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
-        result = self.save_image(preview, "mask_preview", prompt, extra_pnginfo)
+        result = self.save_image(preview, "mask_preview", prompt, extra_pnginfo, context=context)
         return {
             "ui": result["ui"],
             "result": (mask,)
@@ -347,7 +350,7 @@ class AILab_ImagePreview(AILab_PreviewBase):
     def INPUT_TYPES(s):
         return {
             "required": {"image": ("IMAGE",),},
-            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO", "context": "EXECUTION_CONTEXT"},
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -356,8 +359,8 @@ class AILab_ImagePreview(AILab_PreviewBase):
     OUTPUT_NODE = True
     CATEGORY = "🧪AILab/🖼️IMAGE"
 
-    def preview_image(self, image, prompt=None, extra_pnginfo=None):
-        result = self.save_image(image, "image_preview", prompt, extra_pnginfo)
+    def preview_image(self, image, prompt=None, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        result = self.save_image(image, "image_preview", prompt, extra_pnginfo, context=context)
         return {
             "ui": result["ui"],
             "result": (image,)
@@ -593,35 +596,35 @@ class AILab_MaskCombiner:
 # Base class for image loaders
 class AILab_BaseImageLoader:
     @classmethod
-    def get_image_files(cls):
-        input_dir = folder_paths.get_input_directory()
+    def get_image_files(cls, context: execution_context.ExecutionContext):
+        input_dir = folder_paths.get_input_directory(user_hash=context.user_hash)
         os.makedirs(input_dir, exist_ok=True)
-        return [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f)) and 
+        return [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f)) and
                 f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.tif'))]
 
     def download_image(self, url):
         try:
             import requests
             from io import BytesIO
-            
+
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
-            
+
             response = requests.get(url, stream=True, timeout=10, headers=headers)
             if response.status_code != 200:
                 raise ValueError(f"Failed to download image from URL: {url}, status code: {response.status_code}")
-                
+
             return Image.open(BytesIO(response.content))
         except Exception as e:
             print(f"Error downloading image from URL: {str(e)}")
             raise e
 
-    def get_image(self, image_path_or_URL="", image=""):
+    def get_image(self, image_path_or_URL="", image="", context: execution_context.ExecutionContext=None):
         """Get image from path, URL or selected file"""
         if not image_path_or_URL and (not image or image == ""):
             return None
-            
+
         if image_path_or_URL:
             if image_path_or_URL.startswith(('http://', 'https://')):
                 return self.download_image(image_path_or_URL)
@@ -629,22 +632,22 @@ class AILab_BaseImageLoader:
                 if os.path.isfile(image_path_or_URL):
                     return Image.open(image_path_or_URL)
                 else:
-                    input_dir = folder_paths.get_input_directory()
+                    input_dir = folder_paths.get_input_directory(user_hash=context.user_hash)
                     full_path = os.path.join(input_dir, image_path_or_URL)
                     if os.path.isfile(full_path):
                         return Image.open(full_path)
                     else:
                         raise ValueError(f"Image file not found: {image_path_or_URL}")
         else:
-            image_path = folder_paths.get_annotated_filepath(image)
+            image_path = folder_paths.get_annotated_filepath(image, user_hash=context.user_hash)
             return Image.open(image_path)
-    
+
     @classmethod
-    def calculate_hash(cls, image_path_or_URL="", image=""):
+    def calculate_hash(cls, image_path_or_URL="", image="", context: execution_context.ExecutionContext=None):
         """Calculate hash for IS_CHANGED method"""
         if not image_path_or_URL and (not image or image == ""):
             return "no_input"
-            
+
         if image_path_or_URL:
             try:
                 if image_path_or_URL.startswith(('http://', 'https://')):
@@ -655,11 +658,11 @@ class AILab_BaseImageLoader:
                     if os.path.isfile(image_path_or_URL):
                         file_path = image_path_or_URL
                     else:
-                        input_dir = folder_paths.get_input_directory()
+                        input_dir = folder_paths.get_input_directory(user_hash=context.user_hash)
                         file_path = os.path.join(input_dir, image_path_or_URL)
                         if not os.path.isfile(file_path):
                             return None
-                    
+
                     m = hashlib.sha256()
                     with open(file_path, 'rb') as f:
                         m.update(f.read())
@@ -667,49 +670,49 @@ class AILab_BaseImageLoader:
             except:
                 return None
         else:
-            image_path = folder_paths.get_annotated_filepath(image)
+            image_path = folder_paths.get_annotated_filepath(image, user_hash=context.user_hash)
             m = hashlib.sha256()
             with open(image_path, 'rb') as f:
                 m.update(f.read())
             return m.digest().hex()
-    
+
     @classmethod
-    def validate_inputs(cls, image_path_or_URL="", image=""):
+    def validate_inputs(cls, image_path_or_URL="", image="", context: execution_context.ExecutionContext=None):
         """Validate inputs for VALIDATE_INPUTS method"""
         if not image_path_or_URL and (not image or image == ""):
             return True
-            
+
         if image_path_or_URL:
             return True
-        
-        if not folder_paths.exists_annotated_filepath(image):
+
+        if not folder_paths.exists_annotated_filepath(image, user_hash=context.user_hash):
             return f"Invalid image file: {image}"
-        
+
         return True
 
     def process_image_to_tensor(self, img):
         """Convert PIL image to tensor with proper format"""
         if img is None:
             return None
-            
+
         img_rgb = img.convert('RGB')
         output_images = []
-        
+
         for i in ImageSequence.Iterator(img_rgb):
             i = ImageOps.exif_transpose(i)
             if i.mode == 'I':
                 i = i.point(lambda i: i * (1 / 255))
-            
+
             if i.mode != 'RGB':
                 i = i.convert('RGB')
-            
+
             image = np.array(i).astype(np.float32) / 255.0
             if len(image.shape) == 3:
                 image = torch.from_numpy(image)[None,]
             else:
                 image = torch.from_numpy(image).unsqueeze(0)  # Add batch dimension
             output_images.append(image)
-        
+
         if len(output_images) > 1:
             return torch.cat(output_images, dim=0)
         else:
@@ -718,15 +721,15 @@ class AILab_BaseImageLoader:
 # Simple image loader node (basic functionality)
 class AILab_LoadImageSimple(AILab_BaseImageLoader):
     @classmethod
-    def INPUT_TYPES(cls):
-        files = cls.get_image_files()
+    def INPUT_TYPES(cls, context: execution_context.ExecutionContext):
+        files = cls.get_image_files(context=context)
         return {
             "required": {
-                "image_path_or_URL": ("STRING", {"default": "", "placeholder": "Local path, network path or URL"}),
                 "image": ([""] + sorted(files) if files else [""], {"image_upload": True}),
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
+                "context": "EXECUTION_CONTEXT",
             },
         }
 
@@ -736,45 +739,45 @@ class AILab_LoadImageSimple(AILab_BaseImageLoader):
     FUNCTION = "load_image"
     OUTPUT_NODE = False
 
-    def load_image(self, image_path_or_URL="", image="", extra_pnginfo=None):
+    def load_image(self, image="", extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        image_path_or_URL = ""
         try:
-            img = self.get_image(image_path_or_URL, image)
+            img = self.get_image(image_path_or_URL, image, context=context)
 
             if img is None:
                 print("No image input provided, returning empty image")
                 empty_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
                 return (empty_image, 64, 64)
-            
+
             width, height = img.size
             output_image = self.process_image_to_tensor(img)
-            
+
             return (output_image, width, height)
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f"Error loading image: {e}")
             empty_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
             return (empty_image, 64, 64)
-    
+
     @classmethod
-    def IS_CHANGED(cls, image_path_or_URL="", image="", extra_pnginfo=None):
-        return cls.calculate_hash(image_path_or_URL, image)
-    
+    def IS_CHANGED(cls, image_path_or_URL="", image="", extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        return cls.calculate_hash(image_path_or_URL, image, context=context)
+
     @classmethod
-    def VALIDATE_INPUTS(cls, image_path_or_URL="", image="", extra_pnginfo=None):
-        return cls.validate_inputs(image_path_or_URL, image)
+    def VALIDATE_INPUTS(cls, image_path_or_URL="", image="", extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        return cls.validate_inputs(image_path_or_URL, image, context=context)
 
 # Standard image loader node (with resize and basic mask)
 class AILab_LoadImage(AILab_BaseImageLoader):
     upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
     
     @classmethod
-    def INPUT_TYPES(cls):
-        files = cls.get_image_files()
+    def INPUT_TYPES(cls, context: execution_context.ExecutionContext):
+        files = cls.get_image_files(context=context)
         return {
             "required": {
-                "image_path_or_URL": ("STRING", {"default": "","placeholder": "Local path, network path or URL"}),
                 "image": ([""] + sorted(files) if files else [""], {"image_upload": True}),
                 "upscale_method": (cls.upscale_methods, {"default": "lanczos", "tooltip": "Method used for resizing the image"}),
                 "scale_by": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 8.0, "step": 0.01, "tooltip": "Scale image by this factor (ignored if size > 0)"}),
@@ -783,6 +786,7 @@ class AILab_LoadImage(AILab_BaseImageLoader):
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
+                "context": "EXECUTION_CONTEXT",
             },
         }
 
@@ -792,18 +796,20 @@ class AILab_LoadImage(AILab_BaseImageLoader):
     FUNCTION = "load_image"
     OUTPUT_NODE = False
 
-    def load_image(self, image_path_or_URL="", image="", upscale_method="lanczos", scale_by=1.0, 
-                  resize_mode="longest_side", size=0, extra_pnginfo=None):
+    def load_image(self, image="", upscale_method="lanczos", scale_by=1.0,
+                  resize_mode="longest_side", size=0, extra_pnginfo=None,
+                   context: execution_context.ExecutionContext=None):
+        image_path_or_URL = ""
         try:
-            img = self.get_image(image_path_or_URL, image)
-            
+            img = self.get_image(image_path_or_URL, image, context=context)
+
             if img is None:
                 empty_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
                 empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
                 return (empty_image, empty_mask, 64, 64)
-            
+
             orig_width, orig_height = img.size
-            
+
             resampling_map = {
                 "nearest-exact": Image.NEAREST,
                 "bilinear": Image.BILINEAR,
@@ -816,9 +822,9 @@ class AILab_LoadImage(AILab_BaseImageLoader):
             has_alpha = 'A' in img.getbands()
             if has_alpha:
                 original_alpha = img.getchannel('A')
-            
+
             img_rgb = img.convert('RGB')
-         
+
             if size > 0:
                 if resize_mode == "longest_side":
                     if orig_width >= orig_height:
@@ -848,7 +854,7 @@ class AILab_LoadImage(AILab_BaseImageLoader):
                 new_width = int(orig_width * scale_by)
                 new_height = int(orig_height * scale_by)
                 img_rgb = img_rgb.resize((new_width, new_height), resampling)
-            
+
             width, height = img_rgb.size
 
             mask = None
@@ -863,11 +869,11 @@ class AILab_LoadImage(AILab_BaseImageLoader):
                     mask = mask.unsqueeze(0)
             else:
                 mask = torch.ones((1, height, width), dtype=torch.float32)
-            
+
             output_image = self.process_image_to_tensor(img_rgb)
-            
+
             return (output_image, mask, width, height)
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -875,25 +881,24 @@ class AILab_LoadImage(AILab_BaseImageLoader):
             empty_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
             empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
             return (empty_image, empty_mask, 64, 64)
-    
+
     @classmethod
-    def IS_CHANGED(cls, image_path_or_URL="", image="", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None):
-        return cls.calculate_hash(image_path_or_URL, image)
-    
+    def IS_CHANGED(cls, image_path_or_URL="", image="", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        return cls.calculate_hash(image_path_or_URL, image, context=context)
+
     @classmethod
-    def VALIDATE_INPUTS(cls, image_path_or_URL="", image="", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None):
-        return cls.validate_inputs(image_path_or_URL, image)
+    def VALIDATE_INPUTS(cls, image_path_or_URL="", image="", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        return cls.validate_inputs(image_path_or_URL, image, context=context)
 
 # Advanced image loader node (with full mask processing)
 class AILab_LoadImageAdvanced(AILab_BaseImageLoader):
     upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
-    
+
     @classmethod
-    def INPUT_TYPES(cls):
-        files = cls.get_image_files()
+    def INPUT_TYPES(cls, context: execution_context.ExecutionContext):
+        files = cls.get_image_files(context)
         return {
             "required": {
-                "image_path_or_URL": ("STRING", {"default": "","placeholder": "Local path, network path or URL"}),
                 "image": ([""] + sorted(files) if files else [""], {"image_upload": True}),
                 "mask_channel": (["alpha", "red", "green", "blue"], {"default": "alpha", "tooltip": "Select channel to extract mask from"}),
                 "upscale_method": (cls.upscale_methods, {"default": "lanczos", "tooltip": "Method used for resizing the image"}),
@@ -903,6 +908,7 @@ class AILab_LoadImageAdvanced(AILab_BaseImageLoader):
             },
             "hidden": {
                 "extra_pnginfo": "EXTRA_PNGINFO",
+                "context": "EXECUTION_CONTEXT",
             },
         }
 
@@ -912,11 +918,12 @@ class AILab_LoadImageAdvanced(AILab_BaseImageLoader):
     FUNCTION = "load_image"
     OUTPUT_NODE = False
 
-    def load_image(self, image_path_or_URL="", image="", mask_channel="alpha", upscale_method="lanczos", scale_by=1.0, 
-                  resize_mode="longest_side", size=0, extra_pnginfo=None):
+    def load_image(self, image="", mask_channel="alpha", upscale_method="lanczos", scale_by=1.0,
+                  resize_mode="longest_side", size=0, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        image_path_or_URL = ""
         try:
-            img = self.get_image(image_path_or_URL, image)
-            
+            img = self.get_image(image_path_or_URL, image, context=context)
+
             if img is None:
                 empty_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
                 empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
@@ -1030,12 +1037,12 @@ class AILab_LoadImageAdvanced(AILab_BaseImageLoader):
             return (empty_image, empty_mask, empty_mask_image, 64, 64)
     
     @classmethod
-    def IS_CHANGED(cls, image_path_or_URL="", image="", mask_channel="alpha", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None):
-        return cls.calculate_hash(image_path_or_URL, image)
+    def IS_CHANGED(cls, image_path_or_URL="", image="", mask_channel="alpha", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        return cls.calculate_hash(image_path_or_URL, image, context)
     
     @classmethod
-    def VALIDATE_INPUTS(cls, image_path_or_URL="", image="", mask_channel="alpha", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None):
-        return cls.validate_inputs(image_path_or_URL, image)
+    def VALIDATE_INPUTS(cls, image_path_or_URL="", image="", mask_channel="alpha", upscale_method="lanczos", scale_by=1.0, resize_mode="longest_side", size=0, extra_pnginfo=None, context: execution_context.ExecutionContext=None):
+        return cls.validate_inputs(image_path_or_URL, image, context)
 
 # Image combiner node
 class AILab_ImageCombiner:
@@ -1282,7 +1289,7 @@ class AILab_ImageStitch:
             "background_color": "Color for spacing between images and padding background",
             "kontext_mode": "Special mode that arranges 3 images in a specific layout (image1 and image2 stacked vertically, image3 on the right)"
         }
-        
+
         return {
             "required": {
                 "image1": ("IMAGE",),
@@ -1314,29 +1321,29 @@ class AILab_ImageStitch:
         """Pad image with specified color"""
         batch, height, width, channels = image.shape
         r, g, b = color_val
-        
+
         pad_top, pad_bottom, pad_left, pad_right = padding
-        
+
         new_height = height + pad_top + pad_bottom
         new_width = width + pad_left + pad_right
-        
+
         result = torch.zeros((batch, new_height, new_width, channels), device=image.device)
-        
+
         if channels >= 3:
             result[..., 0] = r
             result[..., 1] = g
             result[..., 2] = b
             if channels == 4:
                 result[..., 3] = 1.0
-                
+
         result[:, pad_top:pad_top+height, pad_left:pad_left+width, :] = image
-        
+
         return result
 
     def match_dimensions(self, image1, image2, direction, color_val):
         h1, w1 = image1.shape[1:3]
         h2, w2 = image2.shape[1:3]
-        
+
         if direction in ["left", "right"]:
             if h1 != h2:
                 target_h = max(h1, h2)
@@ -1348,7 +1355,7 @@ class AILab_ImageStitch:
                     pad_h = target_h - h2
                     pad_top, pad_bottom = pad_h // 2, pad_h - pad_h // 2
                     image2 = self.pad_with_color(image2, (pad_top, pad_bottom, 0, 0), color_val)
-        else:  
+        else:
             if w1 != w2:
                 target_w = max(w1, w2)
                 if w1 < target_w:
@@ -1359,7 +1366,7 @@ class AILab_ImageStitch:
                     pad_w = target_w - w2
                     pad_left, pad_right = pad_w // 2, pad_w - pad_w // 2
                     image2 = self.pad_with_color(image2, (0, 0, pad_left, pad_right), color_val)
-        
+
         return image1, image2
 
     def ensure_same_channels(self, image1, image2):
@@ -1382,7 +1389,7 @@ class AILab_ImageStitch:
             return None
             
         spacing_width = spacing_width + (spacing_width % 2)
-        
+
         if direction in ["left", "right"]:
             spacing_shape = (
                 image1.shape[0],
@@ -1397,9 +1404,9 @@ class AILab_ImageStitch:
                 max(image1.shape[2], image2.shape[2]),
                 image1.shape[-1],
             )
-        
+
         spacing = torch.zeros(spacing_shape, device=image1.device)
-        
+
         r, g, b = color_val
         if spacing.shape[-1] >= 3:
             spacing[..., 0] = r
@@ -1407,7 +1414,7 @@ class AILab_ImageStitch:
             spacing[..., 2] = b
             if spacing.shape[-1] == 4:
                 spacing[..., 3] = 1.0
-                
+
         return spacing
 
     def stitch_kontext_mode(self, image1, image2, image3, match_image_size, spacing_width, color_val):
@@ -1418,7 +1425,7 @@ class AILab_ImageStitch:
                 return self.stitch_two_images(image1, image3, "right", match_image_size, spacing_width, color_val)
             else:
                 return image1
-        
+
         max_batch = max(image1.shape[0], image2.shape[0], image3.shape[0])
         if image1.shape[0] < max_batch:
             image1 = torch.cat([image1, image1[-1:].repeat(max_batch - image1.shape[0], 1, 1, 1)])
@@ -1426,7 +1433,7 @@ class AILab_ImageStitch:
             image2 = torch.cat([image2, image2[-1:].repeat(max_batch - image2.shape[0], 1, 1, 1)])
         if image3.shape[0] < max_batch:
             image3 = torch.cat([image3, image3[-1:].repeat(max_batch - image3.shape[0], 1, 1, 1)])
-        
+
         if match_image_size:
             w1 = image1.shape[2]
             h2, w2 = image2.shape[1:3]
@@ -1439,46 +1446,46 @@ class AILab_ImageStitch:
             ).movedim(1, -1)
         else:
             image1, image2 = self.match_dimensions(image1, image2, "down", color_val)
-        
+
         image1, image2 = self.ensure_same_channels(image1, image2)
-        
+
         v_spacing = self.create_spacing(image1, image2, spacing_width, "down", color_val)
-        
+
         v_images = [image1, image2]
         if v_spacing is not None:
             v_images.insert(1, v_spacing)
-        
+
         left_column = torch.cat(v_images, dim=1)
-        
+
         if match_image_size:
             h_left = left_column.shape[1]
             h3, w3 = image3.shape[1:3]
             aspect_ratio = w3 / h3
             target_h = h_left
             target_w = int(h_left * aspect_ratio)
-            
+
             image3 = common_upscale(
                 image3.movedim(-1, 1), target_w, target_h, "lanczos", "disabled"
             ).movedim(1, -1)
         else:
             left_column, image3 = self.match_dimensions(left_column, image3, "right", color_val)
-        
+
         left_column, image3 = self.ensure_same_channels(left_column, image3)
-        
+
         h_spacing = self.create_spacing(left_column, image3, spacing_width, "right", color_val)
-        
+
         h_images = [left_column, image3]
         if h_spacing is not None:
             h_images.insert(1, h_spacing)
-        
+
         result = torch.cat(h_images, dim=2)
-        
+
         return result
 
     def stitch_two_images(self, image1, image2, direction, match_image_size, spacing_width, color_val):
         if image2 is None:
             return image1
-            
+
         if image1.shape[0] != image2.shape[0]:
             max_batch = max(image1.shape[0], image2.shape[0])
             if image1.shape[0] < max_batch:
@@ -1516,7 +1523,7 @@ class AILab_ImageStitch:
 
         concat_dim = 2 if direction in ["left", "right"] else 1
         result = torch.cat(images, dim=concat_dim)
-        
+
         return result
 
     def stitch(self, image1, direction, match_image_size, max_width, max_height, spacing_width, background_color, image2=None, image3=None,):
@@ -1525,16 +1532,16 @@ class AILab_ImageStitch:
             return (torch.zeros((1, 64, 64, 3)),)
             
         color_val = self.hex_to_rgb(background_color)
-        
+
         if direction == "kontext_mode":
             result = self.stitch_kontext_mode(image1, image2, image3, match_image_size, spacing_width, color_val)
         else:
             result = self.stitch_two_images(image1, image2, direction, match_image_size, spacing_width, color_val)
-        
+
         if max_width > 0 or max_height > 0:
             h, w = result.shape[1:3]
             need_resize = False
-            
+
             if max_width > 0 and w > max_width:
                 scale_factor = max_width / w
                 target_w = max_width
@@ -1542,18 +1549,18 @@ class AILab_ImageStitch:
                 need_resize = True
             else:
                 target_w, target_h = w, h
-                
+
             if max_height > 0 and (target_h > max_height or (target_h == h and h > max_height)):
                 scale_factor = max_height / target_h
                 target_h = max_height
                 target_w = int(target_w * scale_factor)
                 need_resize = True
-                
+
             if need_resize:
                 result = common_upscale(
                     result.movedim(-1, 1), target_w, target_h, "lanczos", "disabled"
                 ).movedim(1, -1)
-                
+
         return (result,)
 
 # Image Crop node

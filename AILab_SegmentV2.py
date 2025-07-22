@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 from torch.hub import download_url_to_file
 
+import execution_context
 import folder_paths
 from segment_anything import sam_model_registry, SamPredictor
 from groundingdino.util.slconfig import SLConfig
@@ -64,8 +65,8 @@ DINO_MODELS = {
     }
 }
 
-def get_or_download_model_file(filename, url, dirname):
-    local_path = folder_paths.get_full_path(dirname, filename)
+def get_or_download_model_file(context: execution_context.ExecutionContext, filename, url, dirname):
+    local_path = folder_paths.get_full_path(context, dirname, filename)
     if local_path:
         return local_path
     folder = os.path.join(folder_paths.models_dir, dirname)
@@ -150,6 +151,9 @@ class SegmentV2:
                 "invert_output": ("BOOLEAN", {"default": False, "tooltip": tooltips["invert_output"]}),
                 "background": (["Alpha", "Color"], {"default": "Alpha", "tooltip": tooltips["background"]}),
                 "background_color": ("COLOR", {"default": "#222222", "tooltip": tooltips["background_color"]}),
+            },
+            "hidden": {
+                "context": "EXECUTION_CONTEXT",
             }
         }
 
@@ -164,7 +168,8 @@ class SegmentV2:
 
     def segment_v2(self, image, prompt, sam_model, dino_model, threshold=0.30,
                    mask_blur=0, mask_offset=0, background="Alpha", 
-                   background_color="#222222", invert_output=False):
+                   background_color="#222222", invert_output=False,
+                   context: execution_context.ExecutionContext=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         batch_size = image.shape[0] if len(image.shape) == 4 else 1
@@ -177,8 +182,8 @@ class SegmentV2:
             img_pil = tensor2pil(image[b])
             img_np = np.array(img_pil.convert("RGB"))
             dino_info = DINO_MODELS[dino_model]
-            config_path = get_or_download_model_file(dino_info["config_filename"], dino_info["config_url"], "grounding-dino")
-            weights_path = get_or_download_model_file(dino_info["model_filename"], dino_info["model_url"], "grounding-dino")
+            config_path = get_or_download_model_file(context, dino_info["config_filename"], dino_info["config_url"], "grounding-dino")
+            weights_path = get_or_download_model_file(context, dino_info["model_filename"], dino_info["model_url"], "grounding-dino")
             dino_key = (config_path, weights_path, device)
             if dino_key not in self.dino_model_cache:
                 args = SLConfig.fromfile(config_path)
@@ -190,7 +195,7 @@ class SegmentV2:
                 self.dino_model_cache[dino_key] = model
             dino = self.dino_model_cache[dino_key]
             sam_info = SAM_MODELS[sam_model]
-            sam_ckpt_path = get_or_download_model_file(sam_info["filename"], sam_info["model_url"], "SAM")
+            sam_ckpt_path = get_or_download_model_file(context, sam_info["filename"], sam_info["model_url"], "SAM")
             sam_key = (sam_info["model_type"], sam_ckpt_path, device)
             if sam_key not in self.sam_model_cache:
                 try:
@@ -272,8 +277,8 @@ class SegmentV2:
             empty_mask = torch.zeros((batch_size, 1, height, width), dtype=torch.float32, device="cpu")
             empty_mask_rgb = empty_mask.reshape((-1, 1, height, width)).movedim(1, -1).expand(-1, -1, -1, 3)
             return (image, empty_mask, empty_mask_rgb)
-        return (torch.cat(result_images, dim=0), 
-                torch.cat(result_masks, dim=0), 
+        return (torch.cat(result_images, dim=0),
+                torch.cat(result_masks, dim=0),
                 torch.cat(result_mask_images, dim=0))
 
 NODE_CLASS_MAPPINGS = {

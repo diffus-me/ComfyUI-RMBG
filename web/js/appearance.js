@@ -1,4 +1,4 @@
-import { app } from "/scripts/app.js";
+import { app } from "../../../scripts/app.js";
 
 const COLOR_THEMES = {
     segment: { nodeColor: "#222e40", nodeBgColor: "#364254", width: 340 },

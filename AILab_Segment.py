@@ -25,6 +25,7 @@ from PIL import Image
 from PIL import ImageFilter
 from torch.hub import download_url_to_file
 
+import execution_context
 import folder_paths
 import comfy.model_management
 from segment_anything import sam_model_registry, SamPredictor
@@ -170,6 +171,9 @@ class Segment:
                 "invert_output": ("BOOLEAN", {"default": False, "tooltip": tooltips["invert_output"]}),
                 "background": (["Alpha", "Color"], {"default": "Alpha", "tooltip": tooltips["background"]}),
                 "background_color": ("COLOR", {"default": "#222222", "tooltip": tooltips["background_color"]}),
+            },
+            "hidden": {
+                "context": "EXECUTION_CONTEXT",
             }
         }
 
@@ -193,12 +197,13 @@ class Segment:
 
     def segment(self, image, prompt, sam_model, dino_model, threshold=0.35,
                 mask_blur=0, mask_offset=0, background="Alpha", 
-                background_color="#222222", invert_output=False):
+                background_color="#222222", invert_output=False,
+                context: execution_context.ExecutionContext=None):
         print(f'Processing create segment for: "{prompt}"...')
         
         image = Image.fromarray(np.clip(255. * image[0].cpu().numpy(), 0, 255).astype(np.uint8)).convert('RGBA')
-        dino_model = self.load_groundingdino(dino_model)
-        sam_model = self.load_sam(sam_model)
+        dino_model = self.load_groundingdino(context, dino_model)
+        sam_model = self.load_sam(context, sam_model)
         boxes = self.predict_boxes(dino_model, image, prompt, threshold)
         
         if boxes is None or boxes.shape[0] == 0:
@@ -242,11 +247,11 @@ class Segment:
         
         return (pil2tensor(result_image), mask_tensor, mask_image_output)
 
-    def load_sam(self, model_name):
+    def load_sam(self, context: execution_context.ExecutionContext, model_name):
         if model_name in self._sam_model_cache:
             return self._sam_model_cache[model_name]
         sam_checkpoint_path = self.get_local_filepath(
-            SAM_MODELS[model_name]["model_url"], "sam")
+            context, SAM_MODELS[model_name]["model_url"], "sam")
         model_type = SAM_MODELS[model_name]["model_type"]
         
         sam = sam_model_registry[model_type]()
@@ -259,7 +264,7 @@ class Segment:
         self._sam_model_cache[model_name] = sam
         return sam
 
-    def load_groundingdino(self, model_name):
+    def load_groundingdino(self, context: execution_context.ExecutionContext, model_name):
         if model_name in self._dino_model_cache:
             return self._dino_model_cache[model_name]
         import sys
@@ -271,6 +276,7 @@ class Segment:
         try:
             dino_model_args = self.SLConfig.fromfile(
                 self.get_local_filepath(
+                    context,
                     DINO_MODELS[model_name]["config_url"],
                     "grounding-dino"
                 )
@@ -278,6 +284,7 @@ class Segment:
             dino = self.build_model(dino_model_args)
             checkpoint = torch.load(
                 self.get_local_filepath(
+                    context,
                     DINO_MODELS[model_name]["model_url"],
                     "grounding-dino"
                 )
@@ -355,11 +362,11 @@ class Segment:
         return create_tensor_output(image_np, masks.permute(1, 0, 2, 3).cpu().numpy(), boxes)
 
 
-    def get_local_filepath(self, url, dirname, local_file_name=None):
+    def get_local_filepath(self, context: execution_context.ExecutionContext, url, dirname, local_file_name=None):
         if not local_file_name:
             local_file_name = os.path.basename(urlparse(url).path)
 
-        destination = folder_paths.get_full_path(dirname, local_file_name)
+        destination = folder_paths.get_full_path(context, dirname, local_file_name)
         if destination:
             return destination
 

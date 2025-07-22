@@ -6,7 +6,7 @@
  * https://github.com/1038lab
  */
 
-import { app } from "/scripts/app.js";
+import { app } from "../../../scripts/app.js";
 
 const getContrastTextColor = (hexColor) => {
     const hex = hexColor.replace('#', '');

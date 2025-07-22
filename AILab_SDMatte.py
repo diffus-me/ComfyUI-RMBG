@@ -15,6 +15,8 @@ import os
 import sys
 import copy
 
+import execution_context
+
 if os.environ.get('SDMATTE_CPU_ONLY', '').lower() in ('1', 'true', 'yes'):
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
@@ -78,8 +80,8 @@ SDMATTE_MODELS = {
 
 REQUIRED_COMPONENTS = ["scheduler", "text_encoder", "tokenizer", "unet", "vae"]
 
-def get_or_download_model_file(filename, url, dirname):
-    local_path = folder_paths.get_full_path(dirname, filename)
+def get_or_download_model_file(filename, url, dirname, context: execution_context.ExecutionContext):
+    local_path = folder_paths.get_full_path(context, dirname, filename)
     if local_path:
         return local_path
     folder = os.path.join(folder_paths.models_dir, dirname)
@@ -224,6 +226,9 @@ class AILab_SDMatte:
                 "invert_output": ("BOOLEAN", {"default": False, "tooltip": tooltips["invert_output"]}),
                 "background": (["Alpha", "Color"], {"default": "Alpha", "tooltip": tooltips["background"]}),
                 "background_color": ("COLOR", {"default": "#222222", "tooltip": tooltips["background_color"]}),
+            },
+            "hidden": {
+                "context": "EXECUTION_CONTEXT",
             }
         }
 
@@ -235,7 +240,7 @@ class AILab_SDMatte:
     def __init__(self):
         self.model_cache = {}
 
-    def load_sdmatte_model(self, model_name, device="Auto"):
+    def load_sdmatte_model(self, context: execution_context.ExecutionContext, model_name, device="Auto"):
         cache_key = f"{model_name}_{device}"
         
         current_model_keys = [k for k in self.model_cache.keys() if k.startswith(model_name)]
@@ -266,7 +271,8 @@ class AILab_SDMatte:
             model_path = get_or_download_model_file(
                 model_info["filename"],
                 model_info["model_url"],
-                "RMBG/SDMatte"
+                "RMBG/SDMatte",
+                context,
             )
         
             pretrained_repo = ensure_model_components(model_name)
@@ -333,8 +339,9 @@ class AILab_SDMatte:
     def matting_inference(self, image, model, process_res, device="Auto",
                    mask=None, transparent_object=True, mask_refine=True,
                    sensitivity=0.8, mask_blur=0, mask_offset=0,
-                   invert_output=False, background="Alpha", background_color="#222222"):
-        sdmatte_model = self.load_sdmatte_model(model, device)
+                   invert_output=False, background="Alpha", background_color="#222222",
+                   context: execution_context.ExecutionContext = None):
+        sdmatte_model = self.load_sdmatte_model(context, model, device)
         device_obj = comfy.model_management.get_torch_device()
         if device == "CPU":
             device_obj = torch.device('cpu')

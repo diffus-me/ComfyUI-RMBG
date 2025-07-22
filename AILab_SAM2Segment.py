@@ -7,6 +7,7 @@ from PIL import Image, ImageFilter
 from torch.hub import download_url_to_file
 from safetensors.torch import load_file
 
+import execution_context
 import folder_paths
 import comfy.model_management
 
@@ -111,8 +112,8 @@ DINO_MODELS = {
     }
 }
 
-def get_or_download_model_file(filename, url, dirname):
-    local_path = folder_paths.get_full_path(dirname, filename)
+def get_or_download_model_file(filename, url, dirname, context: execution_context.ExecutionContext):
+    local_path = folder_paths.get_full_path(context, dirname, filename)
     if local_path:
         return local_path
     folder = os.path.join(folder_paths.models_dir, dirname)
@@ -185,6 +186,9 @@ class SAM2Segment:
                 "invert_output": ("BOOLEAN", {"default": False, "tooltip": tooltips["invert_output"]}),
                 "background": (["Alpha", "Color"], {"default": "Alpha", "tooltip": tooltips["background"]}),
                 "background_color": ("COLOR", {"default": "#222222", "tooltip": tooltips["background_color"]}),
+            },
+            "hidden": {
+                "context": "EXECUTION_CONTEXT",
             }
         }
 
@@ -197,7 +201,7 @@ class SAM2Segment:
         self.dino_model_cache = {}
         self.sam2_model_cache = {}
 
-    def load_sam2(self, model_name, device="Auto"):
+    def load_sam2(self, context: execution_context.ExecutionContext, model_name, device="Auto"):
         cache_key = f"{model_name}_{device}"
         if cache_key not in self.sam2_model_cache:
             model_info = SAM2_MODELS[model_name]
@@ -213,7 +217,7 @@ class SAM2Segment:
             
             print(f"Loading {model_name} in {precision.upper()} precision")
             
-            model_path = get_or_download_model_file(model_info[precision]["filename"], model_info[precision]["model_url"], "sam2")
+            model_path = get_or_download_model_file(model_info[precision]["filename"], model_info[precision]["model_url"], "sam2", context)
             
             # Clear any existing Hydra instance
             if GlobalHydra().is_initialized():
@@ -253,7 +257,8 @@ class SAM2Segment:
 
     def segment_v2(self, image, prompt, sam2_model, dino_model, device, threshold=0.35,
                    mask_blur=0, mask_offset=0, background="Alpha", 
-                   background_color="#222222", invert_output=False):
+                   background_color="#222222", invert_output=False,
+                   context: execution_context.ExecutionContext=None):
         device_obj = comfy.model_management.get_torch_device()
 
         # Process batch images
@@ -271,8 +276,8 @@ class SAM2Segment:
 
             # Load GroundingDINO config and weights
             dino_info = DINO_MODELS[dino_model]
-            config_path = get_or_download_model_file(dino_info["config_filename"], dino_info["config_url"], "grounding-dino")
-            weights_path = get_or_download_model_file(dino_info["model_filename"], dino_info["model_url"], "grounding-dino")
+            config_path = get_or_download_model_file(dino_info["config_filename"], dino_info["config_url"], "grounding-dino", context)
+            weights_path = get_or_download_model_file(dino_info["model_filename"], dino_info["model_url"], "grounding-dino", context)
 
             # Load and cache GroundingDINO model
             dino_key = (config_path, weights_path, device_obj)
@@ -289,7 +294,7 @@ class SAM2Segment:
             dino = self.dino_model_cache[dino_key]
 
             # Load SAM2 model
-            predictor = self.load_sam2(sam2_model, device)
+            predictor = self.load_sam2(context, sam2_model, device)
 
             # Preprocess image for DINO
             transform = Compose([
